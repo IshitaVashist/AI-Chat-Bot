@@ -25,7 +25,7 @@ if (!process.env.GEMINI_API_KEY) {
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// System instructions for Revolt Motors
+// Universal system instructions for automatic language detection
 const SYSTEM_INSTRUCTION = `You are a helpful assistant for Revolt Motors, an Indian electric vehicle company. You should only discuss topics related to:
 - Revolt Motors products and services
 - Electric vehicles and motorcycles
@@ -34,7 +34,21 @@ const SYSTEM_INSTRUCTION = `You are a helpful assistant for Revolt Motors, an In
 - Technical specifications of Revolt bikes
 - Charging infrastructure and battery technology
 
-If users ask about topics unrelated to Revolt Motors or electric vehicles, politely redirect them back to Revolt Motors topics. Keep responses conversational and helpful.`;
+IMPORTANT LANGUAGE RULES:
+1. AUTOMATICALLY DETECT the language of the user's input
+2. ALWAYS RESPOND in the SAME LANGUAGE as the user's question
+3. If user asks in English, respond in English
+4. If user asks in Hindi (हिंदी), respond in Hindi
+5. If user asks in any other language, try to respond in that language or fall back to English
+6. Maintain the same language throughout the conversation unless the user switches
+
+If users ask about topics unrelated to Revolt Motors or electric vehicles, politely redirect them back to Revolt Motors topics in the same language they used. Keep responses conversational and helpful.
+
+Examples:
+- User: "Tell me about RV400" → Respond in English
+- User: "RV400 के बारे में बताइए" → Respond in Hindi
+- User: "What is the range?" → Respond in English  
+- User: "रेंज कितनी है?" → Respond in Hindi`;
 
 // WebSocket connection handling
 wss.on('connection', (ws) => {
@@ -42,6 +56,7 @@ wss.on('connection', (ws) => {
   
   let model = null;
   let chat = null;
+  // Removed currentLanguage variable - now using auto-detection
   
   ws.on('message', async (data) => {
     try {
@@ -49,7 +64,7 @@ wss.on('connection', (ws) => {
       
       switch (message.type) {
         case 'start_session':
-          await startSession(ws);
+          await startSession(ws, 'auto');
           break;
           
         case 'text_input':
@@ -81,11 +96,11 @@ wss.on('connection', (ws) => {
     model = null;
   });
   
-  async function startSession(clientWs) {
+  async function startSession(clientWs, language = 'auto') {
     try {
       model = genAI.getGenerativeModel({
-        model: 'gemini-1.5-flash', // Using text model instead of audio for better compatibility
-        systemInstruction: SYSTEM_INSTRUCTION,
+        model: 'gemini-1.5-flash',
+        systemInstruction: SYSTEM_INSTRUCTION, // Use universal instruction
       });
       
       chat = model.startChat({
@@ -95,9 +110,13 @@ wss.on('connection', (ws) => {
         },
       });
       
-      // Notify client that session is ready
-      clientWs.send(JSON.stringify({ type: 'session_started' }));
-      console.log('Session started successfully');
+      // Send session started notification (no initial greeting to avoid language assumption)
+      clientWs.send(JSON.stringify({ 
+        type: 'session_started',
+        language: language
+      }));
+      
+      console.log(`Session started successfully with auto-language detection`);
       
     } catch (error) {
       console.error('Error starting session:', error);
@@ -110,18 +129,25 @@ wss.on('connection', (ws) => {
   
   async function handleTextInput(clientWs, text) {
     try {
-      console.log('Processing text input:', text);
+      console.log('Processing text input with auto-language detection:', text);
       
+      // Let AI auto-detect language and respond accordingly
       const result = await chat.sendMessage(text);
       const response = await result.response;
       const responseText = response.text();
       
-      console.log('AI Response:', responseText);
+      // Simple language detection for TTS (check if response contains Hindi characters)
+      const containsHindi = /[\u0900-\u097F]/.test(responseText);
+      const detectedLanguage = containsHindi ? 'hi' : 'en';
       
-      // Send text response to client
+      console.log(`AI Response (detected: ${detectedLanguage}):`, responseText);
+      
+      // Send text response with detected language for proper TTS
       clientWs.send(JSON.stringify({
         type: 'text_response',
-        text: responseText
+        text: responseText,
+        language: detectedLanguage,
+        autoDetected: true
       }));
       
     } catch (error) {
@@ -139,9 +165,19 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Language support endpoint
+app.get('/languages', (req, res) => {
+  res.json({
+    mode: 'auto-detection',
+    supported_languages: ['en', 'hi', 'auto'],
+    note: 'AI automatically detects and responds in the same language as user input'
+  });
+});
+
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log('Language mode: Auto-detection enabled (English/Hindi)');
 });
 
 module.exports = { app, server };
